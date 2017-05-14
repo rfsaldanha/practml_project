@@ -1,0 +1,140 @@
+---
+title: 'Prediction Assignment: exercise quality'
+author: "Raphael Saldanha"
+date: "14 May 2017"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+# Data reading
+
+The data for this exercise came from http://groupware.les.inf.puc-rio.br/har. After manually inpecting the CSV files, I detected those "#DIV/0!" as NA. 
+
+```{r}
+training <- read.csv("pml-training.csv", na.strings = c("#DIV/0!",""))
+testingFinal <- read.csv("pml-testing.csv", na.strings = "#DIV/0!")
+```
+
+# Multicore processing
+
+To speed up some processes, the doMC library is loaded.
+
+```{r}
+library(doMC)
+registerDoMC(6)
+```
+
+# Functions for preprocessing
+
+The follwing functions of preprocessing aims the removing of variables with an excessive number of NA and almost non variance variables. 
+
+```{r}
+excessNA <- function(vec, tol = .8){
+    if(sum(is.na(vec))/length(vec) > tol){
+        result <- TRUE
+    } else {                                     
+        result <- FALSE
+    }
+    invisible(result)
+}
+
+processDF <- function(df){
+    
+    trainingSubset <- df[,-(1:7)]; # remove some non usefull variables of the dataset
+    
+    classIndex <- ncol(trainingSubset) # class index           
+    
+    # convert variables to numeric, except class
+    trainingSubset[,-classIndex] <- data.frame(sapply(trainingSubset[,-classIndex],as.numeric))
+    
+    # verify columns for NA
+    toRemove <- sapply(trainingSubset, excessNA);
+    # remove columns
+    trainingSubset <- trainingSubset[,!toRemove];
+    
+    # remove near non variance variables
+    nonvar <- nearZeroVar(trainingSubset[,-classIndex],saveMetrics = TRUE)
+    trainingSubset <- trainingSubset[,!as.logical(nonvar$nzv)]
+    
+    # imput NA values
+    if(any(is.na(trainingSubset))){
+        process <- preProcess(trainingSubset[,-classIndex], method="bagImpute")
+        trainingSubset[,-end] <- predict(preProc,trainingSubset[,-classIndex])
+        remove(process)
+    }    
+    
+    invisible(trainingSubset)
+}
+```
+
+
+
+```{r}
+library(caret) 
+
+set.seed(1010)
+
+
+# Split data set                                            
+inTrain <- createDataPartition(training$classe, p=0.2, list = FALSE)
+trainingSubset <- training[inTrain,]
+
+# Preprocess dataframe
+trainingSubset <- processDF(trainingSubset)
+```
+
+
+# Model training
+
+The random forest classifier was adopted considering it's accuracy between others and the no need to parameters selection
+
+```{r}
+# Control with multicore processing
+trainingControl <- trainControl(allowParallel = TRUE, method = "cv", number = 6)
+
+# Random Forest
+modelRF <- train(classe ~ ., data = trainingSubset, method="rf", trainControl = trainingControl, importance=TRUE)
+```
+
+
+## Variable importance
+```{r}
+variableImp <- varImp(modelRF)
+
+variableImp[[1]] <- variableImp[[1]][1:20,]
+plot(variableImp)
+```
+
+
+```{r}
+library(ggplot2)
+qplot(roll_belt, pitch_belt, color = classe, data = trainingSubset,
+      ylim = c(13,28), xlim=c(110,130),
+      size=2)
+```
+
+
+# Cross validation and out of sample error
+
+```{r}
+testingSub <- training[-inTrain,]
+testingSub <- processDF(testingSub)
+testingSub <- testingSub[sample(1:nrow(testingSub), 1000),]
+errorMeasure <- confusionMatrix(testingSub$classe, predict(modelRF,testingSub))
+errorMeasure
+
+outOfSampleError <- 1 - errorMeasure$overall[1]
+names(outOfSampleError) <- "OSE"
+outOfSampleError
+```
+
+
+# Test set
+
+```{r}
+testingFinal$classe <- 1:nrow(testingFinal)
+testingFinal <- processDF(testingFinal)
+predict(modelRF,testingFinal)
+```
+
